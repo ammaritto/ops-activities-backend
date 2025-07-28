@@ -1,7 +1,7 @@
 {
-  "name": "coliving-pulse-backend",
+  "name": "ops-activities-backend",
   "version": "1.0.0",
-  "description": "Backend API proxy for Coliving Pulse dashboard with OAuth 2.0 authentication",
+  "description": "Backend API proxy for OPS Activities dashboard with OAuth 2.0 authentication",
   "main": "node.js",
   "scripts": {
     "start": "node node.js",
@@ -11,7 +11,7 @@
   "keywords": [
     "oauth",
     "api-proxy",
-    "coliving",
+    "activities",
     "dashboard",
     "express"
   ],
