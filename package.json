@@ -1,9 +1,4 @@
 {
-  "scripts": {
-    "start": "node node.js"
-  }
-}
-{
   "name": "ops-activities-backend",
   "version": "1.0.0",
   "description": "Backend API proxy for OPS Activities dashboard with OAuth 2.0 authentication",
