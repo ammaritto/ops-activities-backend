@@ -5,8 +5,7 @@
   "main": "node.js",
   "scripts": {
     "start": "node node.js",
-    "dev": "nodemon node.js",
-    "build": "echo 'Build complete'"
+    "dev": "nodemon node.js"
   },
   "keywords": [
     "oauth",
@@ -27,7 +26,6 @@
     "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=8.0.0"
+    "node": "18.x"
   }
 }
