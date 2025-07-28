@@ -14,46 +14,27 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// OAuth Configuration
+// OAuth Configuration - Client Credentials Flow
 const OAUTH_CONFIG = {
   clientId: process.env.OAUTH_CLIENT_ID,
   clientSecret: process.env.OAUTH_CLIENT_SECRET,
-  authUrl: process.env.OAUTH_AUTH_URL,
-  tokenUrl: process.env.OAUTH_TOKEN_URL,
-  redirectUri: process.env.OAUTH_REDIRECT_URI,
-  scope: process.env.OAUTH_SCOPE || 'api/read api/write',
-  baseUrl: process.env.API_BASE_URL
+  tokenUrl: process.env.OAUTH_TOKEN_URL, // This is your RH_AUTH_URL
+  baseUrl: process.env.API_BASE_URL // This is your RH_BASE_URL
 };
 
-// In-memory token storage (in production, use Redis or database)
+// In-memory token storage
 let tokenStorage = {
   accessToken: null,
-  refreshToken: null,
   expiresAt: null
 };
 
-// Helper function to generate OAuth authorization URL
-function generateAuthUrl() {
-  const params = new URLSearchParams({
-    response_type: 'code',
-    client_id: OAUTH_CONFIG.clientId,
-    redirect_uri: OAUTH_CONFIG.redirectUri,
-    scope: OAUTH_CONFIG.scope,
-    state: 'random_state_string' // In production, generate a secure random state
-  });
-  
-  return `${OAUTH_CONFIG.authUrl}?${params.toString()}`;
-}
-
-// Helper function to exchange authorization code for tokens
-async function exchangeCodeForTokens(code) {
+// Helper function to get access token using Client Credentials flow
+async function getAccessToken() {
   try {
     const tokenData = {
-      grant_type: 'authorization_code',
+      grant_type: 'client_credentials',
       client_id: OAUTH_CONFIG.clientId,
-      client_secret: OAUTH_CONFIG.clientSecret,
-      code: code,
-      redirect_uri: OAUTH_CONFIG.redirectUri
+      client_secret: OAUTH_CONFIG.clientSecret
     };
 
     const response = await axios.post(OAUTH_CONFIG.tokenUrl, tokenData, {
@@ -63,53 +44,15 @@ async function exchangeCodeForTokens(code) {
       }
     });
 
-    const { access_token, refresh_token, expires_in } = response.data;
+    const { access_token, expires_in } = response.data;
     
-    // Store tokens
+    // Store token with expiration
     tokenStorage.accessToken = access_token;
-    tokenStorage.refreshToken = refresh_token;
     tokenStorage.expiresAt = Date.now() + (expires_in * 1000);
 
-    return response.data;
+    return access_token;
   } catch (error) {
-    console.error('Error exchanging code for tokens:', error.response?.data || error.message);
-    throw error;
-  }
-}
-
-// Helper function to refresh access token
-async function refreshAccessToken() {
-  try {
-    if (!tokenStorage.refreshToken) {
-      throw new Error('No refresh token available');
-    }
-
-    const tokenData = {
-      grant_type: 'refresh_token',
-      client_id: OAUTH_CONFIG.clientId,
-      client_secret: OAUTH_CONFIG.clientSecret,
-      refresh_token: tokenStorage.refreshToken
-    };
-
-    const response = await axios.post(OAUTH_CONFIG.tokenUrl, tokenData, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Accept': 'application/json'
-      }
-    });
-
-    const { access_token, refresh_token, expires_in } = response.data;
-    
-    // Update stored tokens
-    tokenStorage.accessToken = access_token;
-    if (refresh_token) {
-      tokenStorage.refreshToken = refresh_token;
-    }
-    tokenStorage.expiresAt = Date.now() + (expires_in * 1000);
-
-    return response.data;
-  } catch (error) {
-    console.error('Error refreshing token:', error.response?.data || error.message);
+    console.error('Error getting access token:', error.response?.data || error.message);
     throw error;
   }
 }
@@ -121,20 +64,13 @@ async function getValidAccessToken() {
     return tokenStorage.accessToken;
   }
 
-  // Try to refresh token
-  if (tokenStorage.refreshToken) {
-    try {
-      await refreshAccessToken();
-      return tokenStorage.accessToken;
-    } catch (error) {
-      console.error('Failed to refresh token:', error.message);
-      // Clear invalid tokens
-      tokenStorage = { accessToken: null, refreshToken: null, expiresAt: null };
-      throw new Error('Authentication required');
-    }
+  // Get new token using client credentials
+  try {
+    return await getAccessToken();
+  } catch (error) {
+    console.error('Failed to get access token:', error.message);
+    throw new Error('Authentication failed');
   }
-
-  throw new Error('Authentication required');
 }
 
 // Routes
@@ -148,56 +84,21 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Get OAuth authorization URL
-app.get('/auth/url', (req, res) => {
+// Test authentication endpoint
+app.get('/auth/test', async (req, res) => {
   try {
-    const authUrl = generateAuthUrl();
-    res.json({ authUrl });
+    const accessToken = await getValidAccessToken();
+    res.json({ 
+      authenticated: true,
+      message: 'Authentication successful',
+      expiresAt: tokenStorage.expiresAt ? new Date(tokenStorage.expiresAt).toISOString() : null
+    });
   } catch (error) {
-    console.error('Error generating auth URL:', error.message);
-    res.status(500).json({ error: 'Failed to generate authorization URL' });
+    res.status(401).json({ 
+      authenticated: false,
+      error: error.message 
+    });
   }
-});
-
-// Handle OAuth callback
-app.get('/auth/callback', async (req, res) => {
-  try {
-    const { code, state, error } = req.query;
-
-    if (error) {
-      return res.status(400).json({ error: `OAuth error: ${error}` });
-    }
-
-    if (!code) {
-      return res.status(400).json({ error: 'Authorization code not provided' });
-    }
-
-    // Exchange code for tokens
-    const tokens = await exchangeCodeForTokens(code);
-    
-    // Redirect to frontend with success
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}?auth=success`);
-  } catch (error) {
-    console.error('OAuth callback error:', error.message);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-    res.redirect(`${frontendUrl}?auth=error&message=${encodeURIComponent(error.message)}`);
-  }
-});
-
-// Check authentication status
-app.get('/auth/status', (req, res) => {
-  const isAuthenticated = !!(tokenStorage.accessToken && tokenStorage.expiresAt > Date.now());
-  res.json({ 
-    authenticated: isAuthenticated,
-    expiresAt: tokenStorage.expiresAt ? new Date(tokenStorage.expiresAt).toISOString() : null
-  });
-});
-
-// Logout endpoint
-app.post('/auth/logout', (req, res) => {
-  tokenStorage = { accessToken: null, refreshToken: null, expiresAt: null };
-  res.json({ message: 'Logged out successfully' });
 });
 
 // Proxy API requests with authentication
@@ -243,9 +144,9 @@ app.get('/api/v3/activities', async (req, res) => {
     console.error('API request error:', error.response?.data || error.message);
     
     if (error.response?.status === 401) {
-      res.status(401).json({ error: 'Authentication required', requiresAuth: true });
-    } else if (error.message === 'Authentication required') {
-      res.status(401).json({ error: 'Authentication required', requiresAuth: true });
+      res.status(401).json({ error: 'Authentication failed', requiresAuth: true });
+    } else if (error.message === 'Authentication failed') {
+      res.status(401).json({ error: 'Authentication failed', requiresAuth: true });
     } else {
       res.status(error.response?.status || 500).json({ 
         error: error.response?.data?.message || error.message || 'Internal server error' 
@@ -275,9 +176,9 @@ app.get('/api/v3/activities/:id', async (req, res) => {
     console.error('API request error:', error.response?.data || error.message);
     
     if (error.response?.status === 401) {
-      res.status(401).json({ error: 'Authentication required', requiresAuth: true });
-    } else if (error.message === 'Authentication required') {
-      res.status(401).json({ error: 'Authentication required', requiresAuth: true });
+      res.status(401).json({ error: 'Authentication failed', requiresAuth: true });
+    } else if (error.message === 'Authentication failed') {
+      res.status(401).json({ error: 'Authentication failed', requiresAuth: true });
     } else {
       res.status(error.response?.status || 500).json({ 
         error: error.response?.data?.message || error.message || 'Internal server error' 
@@ -315,9 +216,9 @@ app.use('/api/*', async (req, res) => {
     console.error('Generic API proxy error:', error.response?.data || error.message);
     
     if (error.response?.status === 401) {
-      res.status(401).json({ error: 'Authentication required', requiresAuth: true });
-    } else if (error.message === 'Authentication required') {
-      res.status(401).json({ error: 'Authentication required', requiresAuth: true });
+      res.status(401).json({ error: 'Authentication failed', requiresAuth: true });
+    } else if (error.message === 'Authentication failed') {
+      res.status(401).json({ error: 'Authentication failed', requiresAuth: true });
     } else {
       res.status(error.response?.status || 500).json({ 
         error: error.response?.data?.message || error.message || 'Internal server error' 
@@ -344,7 +245,6 @@ app.listen(PORT, () => {
   console.log(`🔐 OAuth Config Status:`);
   console.log(`   - Client ID: ${OAUTH_CONFIG.clientId ? '✅ Set' : '❌ Missing'}`);
   console.log(`   - Client Secret: ${OAUTH_CONFIG.clientSecret ? '✅ Set' : '❌ Missing'}`);
-  console.log(`   - Auth URL: ${OAUTH_CONFIG.authUrl || '❌ Missing'}`);
   console.log(`   - Token URL: ${OAUTH_CONFIG.tokenUrl || '❌ Missing'}`);
   console.log(`   - API Base URL: ${OAUTH_CONFIG.baseUrl || '❌ Missing'}`);
 });
