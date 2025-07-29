@@ -109,7 +109,7 @@ app.get('/auth/test', async (req, res) => {
   }
 });
 
-// Proxy API requests with authentication
+// Proxy API requests with authentication - FILTERED FOR CLEANING ACTIVITIES ONLY
 app.get('/api/v3/activities', async (req, res) => {
   try {
     // Get valid access token
@@ -147,7 +147,31 @@ app.get('/api/v3/activities', async (req, res) => {
       }
     });
 
-    res.json(response.data);
+    // Filter the results to only include CLEANING activities
+    const originalData = response.data;
+    
+    if (originalData && originalData.content && Array.isArray(originalData.content)) {
+      const filteredContent = originalData.content.filter(activity => 
+        activity.activityType === 'CLEANING'
+      );
+      
+      // Return the filtered response with updated metadata
+      const filteredResponse = {
+        ...originalData,
+        content: filteredContent,
+        numberOfElements: filteredContent.length,
+        totalElements: filteredContent.length,
+        // Keep original pagination info but note it's been filtered
+        filtered: true,
+        originalTotalElements: originalData.totalElements,
+        filterCriteria: 'activityType=CLEANING'
+      };
+      
+      res.json(filteredResponse);
+    } else {
+      // If the response structure is unexpected, return as-is
+      res.json(originalData);
+    }
   } catch (error) {
     console.error('API request error:', error.response?.data || error.message);
     
@@ -178,6 +202,17 @@ app.get('/api/v3/activities/:id', async (req, res) => {
         'Content-Type': 'application/json'
       }
     });
+
+    // Check if this specific activity is a CLEANING activity
+    const activity = response.data;
+    if (activity && activity.activityType !== 'CLEANING') {
+      res.status(404).json({ 
+        error: 'Activity not found or not a cleaning activity',
+        activityType: activity.activityType,
+        filterCriteria: 'activityType=CLEANING'
+      });
+      return;
+    }
 
     res.json(response.data);
   } catch (error) {
@@ -250,6 +285,7 @@ app.use('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
+  console.log(`🧹 Filtering for CLEANING activities only`);
   console.log(`🔐 OAuth Config Status:`);
   console.log(`   - Client ID: ${OAUTH_CONFIG.clientId ? '✅ Set' : '❌ Missing'}`);
   console.log(`   - Client Secret: ${OAUTH_CONFIG.clientSecret ? '✅ Set' : '❌ Missing'}`);
