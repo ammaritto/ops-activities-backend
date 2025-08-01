@@ -109,7 +109,7 @@ app.get('/auth/test', async (req, res) => {
   }
 });
 
-// Proxy API requests with authentication - FILTERED FOR CLEANING ACTIVITIES ONLY
+// Proxy API requests with authentication - FILTERED FOR CLEANING ACTIVITIES EXCLUDING INVENTORY CHECK DEPARTURE
 app.get('/api/v3/activities', async (req, res) => {
   try {
     // Get valid access token
@@ -147,12 +147,13 @@ app.get('/api/v3/activities', async (req, res) => {
       }
     });
 
-    // Filter the results to EXCLUDE "Inventory Check - Departure" activities
+    // Filter the results to only include CLEANING activities and exclude "Inventory Check - Departure"
     const originalData = response.data;
     
     if (originalData && originalData.content && Array.isArray(originalData.content)) {
       const filteredContent = originalData.content.filter(activity => 
-        !activity.subject || !activity.subject.includes('Inventory Check - Departure')
+        activity.activityType === 'CLEANING' && 
+        (!activity.subject || !activity.subject.includes('Inventory Check - Departure'))
       );
       
       // Return the filtered response with updated metadata
@@ -164,7 +165,7 @@ app.get('/api/v3/activities', async (req, res) => {
         // Keep original pagination info but note it's been filtered
         filtered: true,
         originalTotalElements: originalData.totalElements,
-        filterCriteria: 'excluding "Inventory Check - Departure" activities'
+        filterCriteria: 'activityType=CLEANING and excluding "Inventory Check - Departure"'
       };
       
       res.json(filteredResponse);
