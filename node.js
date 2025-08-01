@@ -147,12 +147,12 @@ app.get('/api/v3/activities', async (req, res) => {
       }
     });
 
-    // Filter the results to only include "Inventory Check - Departure" activities
+    // Filter the results to EXCLUDE "Inventory Check - Departure" activities
     const originalData = response.data;
     
     if (originalData && originalData.content && Array.isArray(originalData.content)) {
       const filteredContent = originalData.content.filter(activity => 
-        activity.subject && activity.subject.includes('Inventory Check - Departure')
+        !activity.subject || !activity.subject.includes('Inventory Check - Departure')
       );
       
       // Return the filtered response with updated metadata
@@ -164,7 +164,7 @@ app.get('/api/v3/activities', async (req, res) => {
         // Keep original pagination info but note it's been filtered
         filtered: true,
         originalTotalElements: originalData.totalElements,
-        filterCriteria: 'subject contains "Inventory Check - Departure"'
+        filterCriteria: 'excluding "Inventory Check - Departure" activities'
       };
       
       res.json(filteredResponse);
