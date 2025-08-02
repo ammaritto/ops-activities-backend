@@ -6,6 +6,9 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000; // Vercel uses 3000 by default
 
+// In-memory storage for deposits (will reset on deployment, but works for testing)
+let depositsData = {};
+
 // Middleware - Updated CORS configuration
 app.use(cors({
   origin: [
@@ -105,6 +108,72 @@ app.get('/auth/test', async (req, res) => {
     res.status(401).json({ 
       authenticated: false,
       error: error.message 
+    });
+  }
+});
+
+// Deposit Status API Endpoints
+
+// GET /api/activity-deposits - Get deposit status for a specific activity
+app.get('/api/activity-deposits', (req, res) => {
+  try {
+    const { activityId } = req.query;
+
+    if (!activityId) {
+      return res.status(400).json({ error: 'Activity ID is required' });
+    }
+
+    // Get deposit status for the activity or return defaults
+    const activityDeposits = depositsData[activityId] || {
+      depositReturnComplete: false,
+      depositTransferredToNewStudio: false
+    };
+    
+    console.log(`GET deposits for activity ${activityId}:`, activityDeposits);
+    res.status(200).json(activityDeposits);
+  } catch (error) {
+    console.error('Error getting deposit status:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: error.message 
+    });
+  }
+});
+
+// PUT /api/activity-deposits - Update deposit status for a specific activity
+app.put('/api/activity-deposits', (req, res) => {
+  try {
+    const { activityId } = req.query;
+    const { depositReturnComplete, depositTransferredToNewStudio } = req.body;
+
+    if (!activityId) {
+      return res.status(400).json({ error: 'Activity ID is required' });
+    }
+    
+    if (typeof depositReturnComplete !== 'boolean' || typeof depositTransferredToNewStudio !== 'boolean') {
+      return res.status(400).json({ 
+        error: 'Both depositReturnComplete and depositTransferredToNewStudio must be boolean values' 
+      });
+    }
+
+    // Store in memory
+    depositsData[activityId] = {
+      depositReturnComplete,
+      depositTransferredToNewStudio,
+      updatedAt: new Date().toISOString()
+    };
+
+    console.log(`PUT deposits for activity ${activityId}:`, depositsData[activityId]);
+    
+    res.status(200).json({
+      message: 'Deposit status updated successfully',
+      data: depositsData[activityId]
+    });
+  } catch (error) {
+    console.error('Error updating deposit status:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      details: error.message 
     });
   }
 });
@@ -287,6 +356,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
   console.log(`🧹 Filtering for CLEANING activities only`);
+  console.log(`💾 Deposit status API available at /api/activity-deposits`);
   console.log(`🔐 OAuth Config Status:`);
   console.log(`   - Client ID: ${OAUTH_CONFIG.clientId ? '✅ Set' : '❌ Missing'}`);
   console.log(`   - Client Secret: ${OAUTH_CONFIG.clientSecret ? '✅ Set' : '❌ Missing'}`);
