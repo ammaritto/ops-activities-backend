@@ -1,13 +1,37 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { Pool } = require('pg');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000; // Vercel uses 3000 by default
+const PORT = process.env.PORT || 3000;
 
-// In-memory storage for deposits (will reset on deployment, but works for testing)
-let depositsData = {};
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Initialize database table
+async function initDatabase() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS activity_deposits (
+        activity_id INTEGER PRIMARY KEY,
+        deposit_return_complete BOOLEAN DEFAULT FALSE,
+        deposit_transferred_to_new_studio BOOLEAN DEFAULT FALSE,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('✅ Database table initialized');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error);
+  }
+}
+
+// Initialize database on startup
+initDatabase();
 
 // Middleware - Updated CORS configuration
 app.use(cors({
@@ -16,7 +40,7 @@ app.use(cors({
     'http://localhost:3000',
     'http://localhost:5173',
     process.env.FRONTEND_URL
-  ].filter(Boolean), // Remove any undefined values
+  ].filter(Boolean),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
@@ -29,8 +53,8 @@ app.use(express.urlencoded({ extended: true }));
 const OAUTH_CONFIG = {
   clientId: process.env.OAUTH_CLIENT_ID,
   clientSecret: process.env.OAUTH_CLIENT_SECRET,
-  tokenUrl: process.env.OAUTH_TOKEN_URL, // This is your RH_AUTH_URL
-  baseUrl: process.env.API_BASE_URL // This is your RH_BASE_URL
+  tokenUrl: process.env.OAUTH_TOKEN_URL,
+  baseUrl: process.env.API_BASE_URL
 };
 
 // In-memory token storage
@@ -57,7 +81,6 @@ async function getAccessToken() {
 
     const { access_token, expires_in } = response.data;
     
-    // Store token with expiration
     tokenStorage.accessToken = access_token;
     tokenStorage.expiresAt = Date.now() + (expires_in * 1000);
 
@@ -70,12 +93,10 @@ async function getAccessToken() {
 
 // Helper function to get valid access token
 async function getValidAccessToken() {
-  // Check if token exists and is not expired
-  if (tokenStorage.accessToken && tokenStorage.expiresAt > Date.now() + 300000) { // 5 minutes buffer
+  if (tokenStorage.accessToken && tokenStorage.expiresAt > Date.now() + 300000) {
     return tokenStorage.accessToken;
   }
 
-  // Get new token using client credentials
   try {
     return await getAccessToken();
   } catch (error) {
@@ -112,10 +133,10 @@ app.get('/auth/test', async (req, res) => {
   }
 });
 
-// Deposit Status API Endpoints
+// Deposit Status API Endpoints - NOW USING POSTGRESQL
 
 // GET /api/activity-deposits - Get deposit status for a specific activity
-app.get('/api/activity-deposits', (req, res) => {
+app.get('/api/activity-deposits', async (req, res) => {
   try {
     const { activityId } = req.query;
 
@@ -123,13 +144,27 @@ app.get('/api/activity-deposits', (req, res) => {
       return res.status(400).json({ error: 'Activity ID is required' });
     }
 
-    // Get deposit status for the activity or return defaults
-    const activityDeposits = depositsData[activityId] || {
-      depositReturnComplete: false,
-      depositTransferredToNewStudio: false
-    };
+    const result = await pool.query(
+      'SELECT * FROM activity_deposits WHERE activity_id = $1',
+      [parseInt(activityId)]
+    );
+
+    let activityDeposits;
+    if (result.rows.length > 0) {
+      const row = result.rows[0];
+      activityDeposits = {
+        depositReturnComplete: row.deposit_return_complete,
+        depositTransferredToNewStudio: row.deposit_transferred_to_new_studio,
+        updatedAt: row.updated_at
+      };
+    } else {
+      activityDeposits = {
+        depositReturnComplete: false,
+        depositTransferredToNewStudio: false
+      };
+    }
     
-    console.log(`GET deposits for activity ${activityId}:`, activityDeposits);
+    console.log(`GET deposits for activity ${activityId} from PostgreSQL:`, activityDeposits);
     res.status(200).json(activityDeposits);
   } catch (error) {
     console.error('Error getting deposit status:', error);
@@ -141,7 +176,7 @@ app.get('/api/activity-deposits', (req, res) => {
 });
 
 // PUT /api/activity-deposits - Update deposit status for a specific activity
-app.put('/api/activity-deposits', (req, res) => {
+app.put('/api/activity-deposits', async (req, res) => {
   try {
     const { activityId } = req.query;
     const { depositReturnComplete, depositTransferredToNewStudio } = req.body;
@@ -156,18 +191,30 @@ app.put('/api/activity-deposits', (req, res) => {
       });
     }
 
-    // Store in memory
-    depositsData[activityId] = {
-      depositReturnComplete,
-      depositTransferredToNewStudio,
-      updatedAt: new Date().toISOString()
+    // Use UPSERT (INSERT ... ON CONFLICT UPDATE) to handle both insert and update
+    const result = await pool.query(`
+      INSERT INTO activity_deposits (activity_id, deposit_return_complete, deposit_transferred_to_new_studio, updated_at)
+      VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+      ON CONFLICT (activity_id)
+      DO UPDATE SET
+        deposit_return_complete = $2,
+        deposit_transferred_to_new_studio = $3,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING *
+    `, [parseInt(activityId), depositReturnComplete, depositTransferredToNewStudio]);
+
+    const savedRow = result.rows[0];
+    const depositData = {
+      depositReturnComplete: savedRow.deposit_return_complete,
+      depositTransferredToNewStudio: savedRow.deposit_transferred_to_new_studio,
+      updatedAt: savedRow.updated_at
     };
 
-    console.log(`PUT deposits for activity ${activityId}:`, depositsData[activityId]);
+    console.log(`PUT deposits for activity ${activityId} to PostgreSQL:`, depositData);
     
     res.status(200).json({
       message: 'Deposit status updated successfully',
-      data: depositsData[activityId]
+      data: depositData
     });
   } catch (error) {
     console.error('Error updating deposit status:', error);
@@ -181,13 +228,10 @@ app.put('/api/activity-deposits', (req, res) => {
 // Proxy API requests with authentication - FILTERED FOR CLEANING ACTIVITIES EXCLUDING INVENTORY CHECK DEPARTURE
 app.get('/api/v3/activities', async (req, res) => {
   try {
-    // Get valid access token
     const accessToken = await getValidAccessToken();
 
-    // Build query parameters
     const queryParams = new URLSearchParams();
     
-    // Default date range if not provided
     const dueDate = req.query.dueDate || '2015-11-02';
     const dueDateEnd = req.query.dueDateEnd || '2035-11-02';
     const page = req.query.page || '0';
@@ -198,7 +242,6 @@ app.get('/api/v3/activities', async (req, res) => {
     queryParams.append('page', page);
     queryParams.append('size', size);
 
-    // Add any additional query parameters
     Object.keys(req.query).forEach(key => {
       if (!['dueDate', 'dueDateEnd', 'page', 'size'].includes(key)) {
         queryParams.append(key, req.query[key]);
@@ -207,7 +250,6 @@ app.get('/api/v3/activities', async (req, res) => {
 
     const apiUrl = `${OAUTH_CONFIG.baseUrl}/api/v3/activities?${queryParams.toString()}`;
     
-    // Make request to external API
     const response = await axios.get(apiUrl, {
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -216,7 +258,6 @@ app.get('/api/v3/activities', async (req, res) => {
       }
     });
 
-    // Filter the results to only include CLEANING activities and exclude "Inventory Check - Departure"
     const originalData = response.data;
     
     if (originalData && originalData.content && Array.isArray(originalData.content)) {
@@ -225,13 +266,11 @@ app.get('/api/v3/activities', async (req, res) => {
         (!activity.subject || !activity.subject.includes('Inventory Check - Departure'))
       );
       
-      // Return the filtered response with updated metadata
       const filteredResponse = {
         ...originalData,
         content: filteredContent,
         numberOfElements: filteredContent.length,
         totalElements: filteredContent.length,
-        // Keep original pagination info but note it's been filtered
         filtered: true,
         originalTotalElements: originalData.totalElements,
         filterCriteria: 'activityType=CLEANING and excluding "Inventory Check - Departure"'
@@ -239,7 +278,6 @@ app.get('/api/v3/activities', async (req, res) => {
       
       res.json(filteredResponse);
     } else {
-      // If the response structure is unexpected, return as-is
       res.json(originalData);
     }
   } catch (error) {
@@ -273,7 +311,6 @@ app.get('/api/v3/activities/:id', async (req, res) => {
       }
     });
 
-    // Check if this specific activity is a CLEANING activity
     const activity = response.data;
     if (activity && activity.activityType !== 'CLEANING') {
       res.status(404).json({ 
@@ -305,7 +342,6 @@ app.use('/api/*', async (req, res) => {
   try {
     const accessToken = await getValidAccessToken();
     
-    // Remove '/api' prefix and construct full URL
     const apiPath = req.originalUrl.replace('/api', '');
     const apiUrl = `${OAUTH_CONFIG.baseUrl}/api${apiPath}`;
     
@@ -356,7 +392,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
   console.log(`🧹 Filtering for CLEANING activities only`);
-  console.log(`💾 Deposit status API available at /api/activity-deposits`);
+  console.log(`💾 Deposit status API with PostgreSQL storage at /api/activity-deposits`);
   console.log(`🔐 OAuth Config Status:`);
   console.log(`   - Client ID: ${OAUTH_CONFIG.clientId ? '✅ Set' : '❌ Missing'}`);
   console.log(`   - Client Secret: ${OAUTH_CONFIG.clientSecret ? '✅ Set' : '❌ Missing'}`);
