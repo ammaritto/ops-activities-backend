@@ -36,7 +36,7 @@ initDatabase();
 // Middleware - Updated CORS configuration
 app.use(cors({
   origin: [
-    'https://coliving-activity-compass.vercel.app',
+    'https://ops-schedule.vercel.app',
     'http://localhost:3000',
     'http://localhost:5173',
     process.env.FRONTEND_URL
