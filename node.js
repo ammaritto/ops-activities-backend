@@ -1,11 +1,13 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { kv } = require('@vercel/kv');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000; // Vercel uses 3000 by default
+
+// In-memory storage for deposits (will reset on deployment, but works for testing)
+let depositsData = {};
 
 // Middleware - Updated CORS configuration
 app.use(cors({
@@ -110,10 +112,10 @@ app.get('/auth/test', async (req, res) => {
   }
 });
 
-// Deposit Status API Endpoints - NOW USING VERCEL KV
+// Deposit Status API Endpoints
 
 // GET /api/activity-deposits - Get deposit status for a specific activity
-app.get('/api/activity-deposits', async (req, res) => {
+app.get('/api/activity-deposits', (req, res) => {
   try {
     const { activityId } = req.query;
 
@@ -121,16 +123,13 @@ app.get('/api/activity-deposits', async (req, res) => {
       return res.status(400).json({ error: 'Activity ID is required' });
     }
 
-    const kvKey = `deposit:${activityId}`;
-    
-    // Get from Vercel KV
-    const storedData = await kv.get(kvKey);
-    const activityDeposits = storedData || {
+    // Get deposit status for the activity or return defaults
+    const activityDeposits = depositsData[activityId] || {
       depositReturnComplete: false,
       depositTransferredToNewStudio: false
     };
     
-    console.log(`GET deposits for activity ${activityId} from KV:`, activityDeposits);
+    console.log(`GET deposits for activity ${activityId}:`, activityDeposits);
     res.status(200).json(activityDeposits);
   } catch (error) {
     console.error('Error getting deposit status:', error);
@@ -142,7 +141,7 @@ app.get('/api/activity-deposits', async (req, res) => {
 });
 
 // PUT /api/activity-deposits - Update deposit status for a specific activity
-app.put('/api/activity-deposits', async (req, res) => {
+app.put('/api/activity-deposits', (req, res) => {
   try {
     const { activityId } = req.query;
     const { depositReturnComplete, depositTransferredToNewStudio } = req.body;
@@ -157,22 +156,18 @@ app.put('/api/activity-deposits', async (req, res) => {
       });
     }
 
-    const depositData = {
+    // Store in memory
+    depositsData[activityId] = {
       depositReturnComplete,
       depositTransferredToNewStudio,
       updatedAt: new Date().toISOString()
     };
 
-    const kvKey = `deposit:${activityId}`;
-    
-    // Store in Vercel KV (persistent storage)
-    await kv.set(kvKey, depositData);
-
-    console.log(`PUT deposits for activity ${activityId} to KV:`, depositData);
+    console.log(`PUT deposits for activity ${activityId}:`, depositsData[activityId]);
     
     res.status(200).json({
       message: 'Deposit status updated successfully',
-      data: depositData
+      data: depositsData[activityId]
     });
   } catch (error) {
     console.error('Error updating deposit status:', error);
@@ -361,7 +356,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
   console.log(`📍 Health check: http://localhost:${PORT}/health`);
   console.log(`🧹 Filtering for CLEANING activities only`);
-  console.log(`💾 Deposit status API with Vercel KV storage at /api/activity-deposits`);
+  console.log(`💾 Deposit status API available at /api/activity-deposits`);
   console.log(`🔐 OAuth Config Status:`);
   console.log(`   - Client ID: ${OAUTH_CONFIG.clientId ? '✅ Set' : '❌ Missing'}`);
   console.log(`   - Client Secret: ${OAUTH_CONFIG.clientSecret ? '✅ Set' : '❌ Missing'}`);
